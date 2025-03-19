@@ -1,3 +1,5 @@
+// Package main implements the Jarvis agent, a multi-purpose system agent that handles
+// various system operations including system monitoring, remote commands, and event processing.
 package main
 
 import (
@@ -21,34 +23,42 @@ import (
 // encryption key should be 32 bytes for AES-256
 var encryptionKey = []byte("12345678901234567890123456789012")
 
+// QueueDefinition represents a RabbitMQ queue configuration.
+// It includes the queue name and consumer identifier.
 type QueueDefinition struct {
-	Name     string `yaml:"name"`
-	Consumer string `yaml:"consumer"`
+	Name     string `yaml:"name"`     // Name of the queue
+	Consumer string `yaml:"consumer"` // Identifier for the consumer
 }
 
+// Config represents the complete configuration for the Jarvis agent.
+// It includes AMQP connection details, queue definitions, monitoring settings,
+// and logging configuration.
 type Config struct {
 	AMQP struct {
-		Username string `yaml:"username"`
-		Password string `yaml:"password"`
-		Host     string `yaml:"host"`
-		VHost    string `yaml:"vhost"`
+		Username string `yaml:"username"` // RabbitMQ username
+		Password string `yaml:"password"` // RabbitMQ password
+		Host     string `yaml:"host"`     // RabbitMQ host address
+		VHost    string `yaml:"vhost"`    // RabbitMQ virtual host
 	} `yaml:"amqp"`
-	Queues     []QueueDefinition `yaml:"queues"`
+	Queues     []QueueDefinition `yaml:"queues"` // List of queues to consume from
 	Monitoring struct {
-		Enabled  bool          `yaml:"enabled"`
-		Interval time.Duration `yaml:"interval"`
+		Enabled  bool          `yaml:"enabled"`  // Whether monitoring is enabled
+		Interval time.Duration `yaml:"interval"` // Interval between metrics collections
 	} `yaml:"monitoring"`
 	Logging struct {
-		Agent logging.LogConfig `yaml:"agent"`
+		Agent logging.LogConfig `yaml:"agent"` // Logging configuration for the agent
 	} `yaml:"logging"`
 }
 
-// Event represents the structure of messages we receive
+// Event represents the structure of messages received by the agent.
+// Each event has a name that determines its type and a message payload.
 type Event struct {
-	Name string `json:"name"`
-	Msg  string `json:"msg"`
+	Name string `json:"name"` // Type of event (e.g., "get_metrics", "reboot_server")
+	Msg  string `json:"msg"`  // Event payload or parameters
 }
 
+// loadConfig reads and parses the configuration file from the specified path.
+// It returns a pointer to the Config structure and any error encountered.
 func loadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -63,17 +73,27 @@ func loadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-// Test function to process a message
+// handleRebootRequest processes a system reboot request.
+// This is a placeholder function that currently only logs the request.
+// In a production environment, this would implement actual system reboot logic.
 func handleRebootRequest(data string, logger *logging.Logger) {
 	logger.Info("Rebooting the system: %s", data)
 }
 
+// handleMessage creates a message handler function that processes incoming AMQP messages.
+// It handles different types of events including monitoring requests and system commands.
+// Parameters:
+//   - cryptor: For encrypting/decrypting messages
+//   - logger: For logging operations
+//   - config: System configuration
+//
+// Returns a MessageHandler function that processes AMQP deliveries.
 func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) messaging.MessageHandler {
 	return func(delivery amqp.Delivery) {
 		logger.Info("Queue [%s] Event: %s", delivery.ConsumerTag, delivery.CorrelationId)
 		logger.Info("Headers: %v", delivery.Headers)
 
-		// Decrypt the received message
+		// Decrypt and validate the message
 		decryptedData, err := cryptor.Decrypt(string(delivery.Body))
 		if err != nil {
 			logger.Error("Failed to decrypt message: %v", err)
@@ -83,7 +103,7 @@ func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Conf
 
 		logger.Info("Decrypted data: %s", decryptedData)
 
-		// Try to parse the event
+		// Parse the event
 		var event Event
 		if err := json.Unmarshal(decryptedData, &event); err != nil {
 			logger.Error("Failed to parse event: %v", err)
@@ -91,49 +111,54 @@ func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Conf
 			return
 		}
 
-		// Handle monitoring request
-		if event.Name == "get_metrics" {
+		// Route the event to appropriate handler
+		switch event.Name {
+		case "get_metrics":
 			handleMonitoringRequest(event.Msg, delivery.CorrelationId, cryptor, logger, config)
 			delivery.Ack(true)
-			return
-		}
-
-		// Handle other events
-		if event.Name == "reboot_server" {
+		case "reboot_server":
 			handleRebootRequest(event.Msg, logger)
+			delivery.Ack(true)
+		default:
+			logger.Info("Received event: Name=%s, Message=%s", event.Name, event.Msg)
+			delivery.Ack(true)
 		}
-		logger.Info("Received event: Name=%s, Message=%s", event.Name, event.Msg)
-		delivery.Ack(true)
 	}
 }
 
-// handleMonitoringRequest processes a monitoring request and sends the response
+// handleMonitoringRequest processes a monitoring request and sends system metrics.
+// It collects system metrics, encrypts them, and sends them to the specified response queue.
+// Parameters:
+//   - responseQueue: Queue to send the metrics response to
+//   - correlationID: ID to correlate the response with the request
+//   - cryptor: For encrypting the metrics data
+//   - logger: For logging operations
+//   - config: System configuration
 func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) {
 	// Create monitor with 1-second interval for measurements
 	monitor := monitoring.NewMonitor(1 * time.Second)
 
-	// Get system metrics
+	// Collect system metrics
 	metrics, err := monitor.GetMetrics()
 	if err != nil {
 		logger.Error("Failed to get system metrics: %v", err)
 		return
 	}
 
-	// Convert metrics to JSON
+	// Prepare and encrypt metrics data
 	metricsJSON, err := metrics.ToJSON()
 	if err != nil {
 		logger.Error("Failed to convert metrics to JSON: %v", err)
 		return
 	}
 
-	// Encrypt the metrics
 	encryptedData, err := cryptor.Encrypt(metricsJSON)
 	if err != nil {
 		logger.Error("Failed to encrypt metrics: %v", err)
 		return
 	}
 
-	// Create AMQP client for response
+	// Setup AMQP client for response
 	amqpConfig := &messaging.AMQPConfig{
 		Username: config.AMQP.Username,
 		Password: config.AMQP.Password,
@@ -148,7 +173,7 @@ func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypt
 	}
 	defer client.Close()
 
-	// Publish the response
+	// Send metrics response
 	err = client.PublishMessage(messaging.PublishConfig{
 		Queue:         responseQueue,
 		CorrelationID: correlationID,
@@ -162,10 +187,15 @@ func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypt
 	logger.Info("Successfully sent metrics response to queue: %s", responseQueue)
 }
 
+// main is the entry point of the Jarvis agent.
+// It initializes the agent, sets up message handlers, and starts processing events.
+// The agent will run until interrupted by a system signal (CTRL+C).
 func main() {
+	// Parse command line flags
 	configPath := flag.String("config", "config.yaml", "Path to config file")
 	flag.Parse()
 
+	// Load configuration
 	config, err := loadConfig(*configPath)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to load config: %v", err))
@@ -178,9 +208,8 @@ func main() {
 	}
 	defer logger.Close()
 
+	// Initialize components
 	cryptor := crypto.NewCryptor(encryptionKey)
-
-	// Create AMQP client
 	amqpConfig := &messaging.AMQPConfig{
 		Username: config.AMQP.Username,
 		Password: config.AMQP.Password,
@@ -188,6 +217,7 @@ func main() {
 		VHost:    config.AMQP.VHost,
 	}
 
+	// Setup AMQP client
 	client, err := messaging.NewClient(amqpConfig)
 	if err != nil {
 		logger.Error("Failed to create AMQP client: %v", err)
@@ -195,7 +225,7 @@ func main() {
 	}
 	defer client.Close()
 
-	// Setup handler for each queue
+	// Setup message handlers for each queue
 	messageHandler := handleMessage(cryptor, logger, config)
 	for _, queueDef := range config.Queues {
 		consumerConfig := messaging.ConsumerConfig{
@@ -214,7 +244,7 @@ func main() {
 		logger.Info("Started consuming from queue: %s", queueDef.Name)
 	}
 
-	// Handle graceful shutdown
+	// Setup graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 

@@ -1,3 +1,6 @@
+// Package main implements the Jarvis monitoring service, which provides a dedicated
+// monitoring interface for system metrics collection and reporting. This service
+// complements the monitoring capabilities of the main Jarvis agent.
 package main
 
 import (
@@ -20,34 +23,42 @@ import (
 // encryption key should be 32 bytes for AES-256
 var encryptionKey = []byte("12345678901234567890123456789012")
 
+// QueueDefinition represents a RabbitMQ queue configuration.
+// It includes the queue name and consumer identifier for message handling.
 type QueueDefinition struct {
-	Name     string `yaml:"name"`
-	Consumer string `yaml:"consumer"`
+	Name     string `yaml:"name"`     // Name of the queue to monitor
+	Consumer string `yaml:"consumer"` // Identifier for the queue consumer
 }
 
+// Config represents the complete configuration for the Jarvis monitor.
+// It includes AMQP connection details, queue definitions, monitoring settings,
+// and logging configuration.
 type Config struct {
 	AMQP struct {
-		Username string `yaml:"username"`
-		Password string `yaml:"password"`
-		Host     string `yaml:"host"`
-		VHost    string `yaml:"vhost"`
+		Username string `yaml:"username"` // RabbitMQ username
+		Password string `yaml:"password"` // RabbitMQ password
+		Host     string `yaml:"host"`     // RabbitMQ host address
+		VHost    string `yaml:"vhost"`    // RabbitMQ virtual host
 	} `yaml:"amqp"`
-	Queues     []QueueDefinition `yaml:"queues"`
+	Queues     []QueueDefinition `yaml:"queues"` // List of queues to monitor
 	Monitoring struct {
-		Enabled  bool          `yaml:"enabled"`
-		Interval time.Duration `yaml:"interval"`
+		Enabled  bool          `yaml:"enabled"`  // Whether monitoring is enabled
+		Interval time.Duration `yaml:"interval"` // Interval between monitoring checks
 	} `yaml:"monitoring"`
 	Logging struct {
-		Agent logging.LogConfig `yaml:"agent"`
+		Agent logging.LogConfig `yaml:"agent"` // Logging configuration for the monitor
 	} `yaml:"logging"`
 }
 
-// Event represents the structure of messages we receive
+// Event represents the structure of messages received by the monitor.
+// Each event has a name that determines its type and a message payload.
 type Event struct {
-	Name string `json:"name"`
-	Msg  string `json:"msg"`
+	Name string `json:"name"` // Type of event to process
+	Msg  string `json:"msg"`  // Event payload or parameters
 }
 
+// loadConfig reads and parses the configuration file from the specified path.
+// It returns a pointer to the Config structure and any error encountered.
 func loadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -62,14 +73,20 @@ func loadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-// Test function to process a message
-
+// handleMessage creates a message handler function that processes incoming AMQP messages.
+// This handler focuses on monitoring-related messages and metrics collection.
+// Parameters:
+//   - cryptor: For encrypting/decrypting messages
+//   - logger: For logging operations
+//   - config: System configuration
+//
+// Returns a MessageHandler function that processes AMQP deliveries.
 func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) messaging.MessageHandler {
 	return func(delivery amqp.Delivery) {
 		logger.Info("Queue [%s] Event: %s", delivery.ConsumerTag, delivery.CorrelationId)
 		logger.Info("Headers: %v", delivery.Headers)
 
-		// Decrypt the received message
+		// Decrypt and validate the message
 		decryptedData, err := cryptor.Decrypt(string(delivery.Body))
 		if err != nil {
 			logger.Error("Failed to decrypt message: %v", err)
@@ -79,25 +96,24 @@ func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Conf
 
 		logger.Info("Decrypted data: %s", decryptedData)
 
-		// Try to parse the event
-		/*
-			if err := json.Unmarshal(decryptedData, &event); err != nil {
-				logger.Error("Failed to parse event: %v", err)
-				delivery.Ack(false)
-				return
-			}
-		*/
+		// Note: Event parsing is currently commented out
+		// This section can be expanded to handle specific monitoring events
+		// such as configuration updates, monitoring interval changes, etc.
 
 		delivery.Ack(true)
 	}
 }
 
-// handleMonitoringRequest processes a monitoring request and sends the response
-
+// main is the entry point of the Jarvis monitor.
+// It initializes the monitoring service, sets up message handlers, and starts
+// processing monitoring-related events. The monitor will run until interrupted
+// by a system signal (CTRL+C).
 func main() {
+	// Parse command line flags
 	configPath := flag.String("config", "config.yaml", "Path to config file")
 	flag.Parse()
 
+	// Load configuration
 	config, err := loadConfig(*configPath)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to load config: %v", err))
@@ -110,9 +126,8 @@ func main() {
 	}
 	defer logger.Close()
 
+	// Initialize components
 	cryptor := crypto.NewCryptor(encryptionKey)
-
-	// Create AMQP client
 	amqpConfig := &messaging.AMQPConfig{
 		Username: config.AMQP.Username,
 		Password: config.AMQP.Password,
@@ -120,6 +135,7 @@ func main() {
 		VHost:    config.AMQP.VHost,
 	}
 
+	// Setup AMQP client
 	client, err := messaging.NewClient(amqpConfig)
 	if err != nil {
 		logger.Error("Failed to create AMQP client: %v", err)
@@ -127,7 +143,7 @@ func main() {
 	}
 	defer client.Close()
 
-	// Setup handler for each queue
+	// Setup message handlers for each monitored queue
 	messageHandler := handleMessage(cryptor, logger, config)
 	for _, queueDef := range config.Queues {
 		consumerConfig := messaging.ConsumerConfig{
@@ -143,14 +159,14 @@ func main() {
 			logger.Error("Failed to setup consumer for queue %s: %v", queueDef.Name, err)
 			panic(err)
 		}
-		logger.Info("Started consuming from queue: %s", queueDef.Name)
+		logger.Info("Started monitoring queue: %s", queueDef.Name)
 	}
 
-	// Handle graceful shutdown
+	// Setup graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Info("Agent is running. Press CTRL+C to exit.")
+	logger.Info("Monitor is running. Press CTRL+C to exit.")
 	<-sigChan
-	logger.Info("Shutting down...")
+	logger.Info("Shutting down monitoring service...")
 }
