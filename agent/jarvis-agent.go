@@ -108,26 +108,30 @@ func sendToRemoteQueue(queueName, correlationID string, data interface{}, crypto
 	defer client.Close()
 
 	// Convert data to JSON if it's not already a string or []byte
-	var dataBytes []byte
+	/*jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal data: %v", err)
+	}*/
+	var jsonData string
 	switch v := data.(type) {
 	case string:
-		dataBytes = []byte(v)
+		jsonData = v
 	case []byte:
-		dataBytes = v
+		jsonData = string(v)
 	default:
-		jsonData, err := json.Marshal(v)
+		dataBytes, err := json.Marshal(v)
 		if err != nil {
 			return fmt.Errorf("failed to marshal data: %v", err)
 		}
-		dataBytes = jsonData
+		jsonData = string(dataBytes)
 	}
-
+	fmt.Printf("Data: %s\n", jsonData)
 	// Encrypt the data
-	encryptedData, err := cryptor.Encrypt(dataBytes)
+	encryptedData, err := cryptor.Encrypt([]byte(jsonData))
 	if err != nil {
 		return fmt.Errorf("failed to encrypt data: %v", err)
 	}
-
+	fmt.Printf("Queue Name: %s\n", queueName)
 	// Send the message
 	err = client.PublishMessage(messaging.PublishConfig{
 		Queue:         queueName,
@@ -166,7 +170,7 @@ func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypt
 		logger.Error("Failed to convert metrics to JSON: %v", err)
 		return
 	}
-
+	//fmt.Printf("Metrics: %s\n", metrics.String())
 	// Send metrics to remote queue
 	err = sendToRemoteQueue(responseQueue, correlationID, metricsJSON, cryptor, logger, config)
 	if err != nil {
