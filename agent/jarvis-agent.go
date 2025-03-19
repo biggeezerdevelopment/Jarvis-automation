@@ -28,6 +28,7 @@ var encryptionKey = []byte("12345678901234567890123456789012")
 type QueueDefinition struct {
 	Name     string `yaml:"name"`     // Name of the queue
 	Consumer string `yaml:"consumer"` // Identifier for the consumer
+	IsRemote bool   `yaml:"remote"`   // Whether this is a remote queue for responses
 }
 
 // Config represents the complete configuration for the Jarvis agent.
@@ -53,8 +54,9 @@ type Config struct {
 // Event represents the structure of messages received by the agent.
 // Each event has a name that determines its type and a message payload.
 type Event struct {
-	Name string `json:"name"` // Type of event (e.g., "get_metrics", "reboot_server")
-	Msg  string `json:"msg"`  // Event payload or parameters
+	Name   string `json:"name"`   // Type of event (e.g., "get_metrics", "reboot_server")
+	Msg    string `json:"msg"`    // Event payload or parameters
+	Remote string `json:"remote"` // Whether the event is remote
 }
 
 // loadConfig reads and parses the configuration file from the specified path.
@@ -78,6 +80,99 @@ func loadConfig(path string) (*Config, error) {
 // In a production environment, this would implement actual system reboot logic.
 func handleRebootRequest(data string, logger *logging.Logger) {
 	logger.Info("Rebooting the system: %s", data)
+}
+
+// sendToRemoteQueue sends an encrypted message to a remote queue.
+// Parameters:
+//   - queueName: Name of the remote queue to send to
+//   - correlationID: ID to correlate the message with a request
+//   - data: Data to encrypt and send
+//   - cryptor: For encrypting the data
+//   - logger: For logging operations
+//   - config: System configuration
+//
+// Returns an error if the message cannot be sent.
+func sendToRemoteQueue(queueName, correlationID string, data interface{}, cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) error {
+	// Setup AMQP client for response
+	amqpConfig := &messaging.AMQPConfig{
+		Username: config.AMQP.Username,
+		Password: config.AMQP.Password,
+		Host:     config.AMQP.Host,
+		VHost:    config.AMQP.VHost,
+	}
+
+	client, err := messaging.NewClient(amqpConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create AMQP client: %v", err)
+	}
+	defer client.Close()
+
+	// Convert data to JSON if it's not already a string or []byte
+	var dataBytes []byte
+	switch v := data.(type) {
+	case string:
+		dataBytes = []byte(v)
+	case []byte:
+		dataBytes = v
+	default:
+		jsonData, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("failed to marshal data: %v", err)
+		}
+		dataBytes = jsonData
+	}
+
+	// Encrypt the data
+	encryptedData, err := cryptor.Encrypt(dataBytes)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt data: %v", err)
+	}
+
+	// Send the message
+	err = client.PublishMessage(messaging.PublishConfig{
+		Queue:         queueName,
+		CorrelationID: correlationID,
+		Body:          []byte(encryptedData),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to publish message: %v", err)
+	}
+
+	logger.Info("Successfully sent message to remote queue %s (ID: %s)", queueName, correlationID)
+	return nil
+}
+
+// handleMonitoringRequest processes a monitoring request and sends system metrics.
+// Parameters:
+//   - responseQueue: Queue to send the metrics response to
+//   - correlationID: ID to correlate the response with the request
+//   - cryptor: For encrypting the metrics data
+//   - logger: For logging operations
+//   - config: System configuration
+func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) {
+	// Create monitor with 1-second interval for measurements
+	monitor := monitoring.NewMonitor(1 * time.Second)
+
+	// Collect system metrics
+	metrics, err := monitor.GetMetrics()
+	if err != nil {
+		logger.Error("Failed to get system metrics: %v", err)
+		return
+	}
+
+	// Prepare metrics data
+	metricsJSON, err := metrics.ToJSON()
+	if err != nil {
+		logger.Error("Failed to convert metrics to JSON: %v", err)
+		return
+	}
+
+	// Send metrics to remote queue
+	err = sendToRemoteQueue(responseQueue, correlationID, metricsJSON, cryptor, logger, config)
+	if err != nil {
+		logger.Error("Failed to send metrics to remote queue: %v", err)
+		return
+	}
 }
 
 // handleMessage creates a message handler function that processes incoming AMQP messages.
@@ -110,81 +205,35 @@ func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Conf
 			delivery.Ack(false)
 			return
 		}
-
+		responseQueue := event.Remote
 		// Route the event to appropriate handler
 		switch event.Name {
 		case "get_metrics":
-			handleMonitoringRequest(event.Msg, delivery.CorrelationId, cryptor, logger, config)
+			// Use response queue from headers or event message
+
+			if responseQueue != "" {
+				handleMonitoringRequest(responseQueue, delivery.CorrelationId, cryptor, logger, config)
+			} else {
+				logger.Error("No response queue specified for metrics request")
+			}
 			delivery.Ack(true)
 		case "reboot_server":
 			handleRebootRequest(event.Msg, logger)
+			// If response queue is specified, send acknowledgment
+			if responseQueue != "" {
+				response := map[string]string{"status": "reboot_initiated"}
+				responseJSON, _ := json.Marshal(response)
+				err = sendToRemoteQueue(responseQueue, delivery.CorrelationId, responseJSON, cryptor, logger, config)
+				if err != nil {
+					logger.Error("Failed to send reboot response: %v", err)
+				}
+			}
 			delivery.Ack(true)
 		default:
 			logger.Info("Received event: Name=%s, Message=%s", event.Name, event.Msg)
 			delivery.Ack(true)
 		}
 	}
-}
-
-// handleMonitoringRequest processes a monitoring request and sends system metrics.
-// It collects system metrics, encrypts them, and sends them to the specified response queue.
-// Parameters:
-//   - responseQueue: Queue to send the metrics response to
-//   - correlationID: ID to correlate the response with the request
-//   - cryptor: For encrypting the metrics data
-//   - logger: For logging operations
-//   - config: System configuration
-func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) {
-	// Create monitor with 1-second interval for measurements
-	monitor := monitoring.NewMonitor(1 * time.Second)
-
-	// Collect system metrics
-	metrics, err := monitor.GetMetrics()
-	if err != nil {
-		logger.Error("Failed to get system metrics: %v", err)
-		return
-	}
-
-	// Prepare and encrypt metrics data
-	metricsJSON, err := metrics.ToJSON()
-	if err != nil {
-		logger.Error("Failed to convert metrics to JSON: %v", err)
-		return
-	}
-
-	encryptedData, err := cryptor.Encrypt(metricsJSON)
-	if err != nil {
-		logger.Error("Failed to encrypt metrics: %v", err)
-		return
-	}
-
-	// Setup AMQP client for response
-	amqpConfig := &messaging.AMQPConfig{
-		Username: config.AMQP.Username,
-		Password: config.AMQP.Password,
-		Host:     config.AMQP.Host,
-		VHost:    config.AMQP.VHost,
-	}
-
-	client, err := messaging.NewClient(amqpConfig)
-	if err != nil {
-		logger.Error("Failed to create AMQP client for response: %v", err)
-		return
-	}
-	defer client.Close()
-
-	// Send metrics response
-	err = client.PublishMessage(messaging.PublishConfig{
-		Queue:         responseQueue,
-		CorrelationID: correlationID,
-		Body:          []byte(encryptedData),
-	})
-	if err != nil {
-		logger.Error("Failed to publish metrics response: %v", err)
-		return
-	}
-
-	logger.Info("Successfully sent metrics response to queue: %s", responseQueue)
 }
 
 // main is the entry point of the Jarvis agent.

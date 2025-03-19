@@ -46,8 +46,9 @@ type Config struct {
 // Event represents the structure of messages sent by the producer.
 // Each event has a name that determines its type and a message payload.
 type Event struct {
-	Name string `json:"name"` // Type of event (e.g., "get_metrics", "reboot_server")
-	Msg  string `json:"msg"`  // Event payload or parameters
+	Name   string `json:"name"`   // Type of event (e.g., "get_metrics", "reboot_server")
+	Msg    string `json:"msg"`    // Event payload or parameters
+	Remote string `json:"remote"` // Whether the event is remote
 }
 
 // loadConfig reads and parses the configuration file from the specified path.
@@ -74,11 +75,12 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")
 	eventName := flag.String("name", "", "Event name")
 	eventMsg := flag.String("msg", "", "Event message")
+	eventRemote := flag.String("remote", "Tester", "Event remote")
 	flag.Parse()
 
 	// Validate required arguments
-	if *eventName == "" || *eventMsg == "" {
-		fmt.Println("Event name and message are required")
+	if *eventName == "" {
+		fmt.Println("Event name is required")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -128,8 +130,9 @@ func main() {
 
 	// Create and marshal event
 	event := Event{
-		Name: *eventName,
-		Msg:  *eventMsg,
+		Name:   *eventName,
+		Msg:    *eventMsg,
+		Remote: *eventRemote,
 	}
 
 	eventJSON, err := json.Marshal(event)

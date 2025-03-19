@@ -3,12 +3,19 @@ amqp:
   password: "guest"
   host: "localhost:5672"
   vhost: ""
+
 queues:
-  - name: "Tester"
+  # Local queues for receiving commands
+  - name: "events"
     consumer: "events_consumer"
+    remote: false
+  
+  
+
 monitoring:
   enabled: true
   interval: "1s"
+
 logging:
   agent:
     directory: "logs/agent"

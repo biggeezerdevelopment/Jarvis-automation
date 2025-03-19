@@ -6,11 +6,12 @@ amqp:
 
 queues:
   # Local queues for receiving commands
-  - name: "events"
+  - name: "Tester"
     consumer: "events_consumer"
     remote: false
   
   
+
 monitoring:
   enabled: true
   interval: "1s"
