@@ -2,18 +2,15 @@ package main
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 
+	"jarvis/pkg/crypto"
+	"jarvis/pkg/messaging"
+
 	"github.com/google/uuid"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,69 +49,39 @@ func loadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-func encrypt(plaintext []byte) (string, error) {
-	block, err := aes.NewCipher(encryptionKey)
-	if err != nil {
-		return "", err
-	}
-
-	// Create a new GCM cipher
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
-	// Create a nonce
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
-	}
-
-	// Encrypt and seal the data
-	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
-
-	// Convert to base64 for easy transmission
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
-}
-
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")
 	eventName := flag.String("name", "Default Name", "Name of the event to send")
 	eventMsg := flag.String("msg", "Hello from default name", "Message to send")
 	flag.Parse()
 
+	cryptor := crypto.NewCryptor(encryptionKey)
+
 	config, err := loadConfig(*configPath)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to load config: %v", err))
 	}
 
-	conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/%s",
-		config.AMQP.Username,
-		config.AMQP.Password,
-		config.AMQP.Host,
-		config.AMQP.VHost))
-	if err != nil {
-		panic(err)
+	// Create AMQP client
+	amqpConfig := &messaging.AMQPConfig{
+		Username: config.AMQP.Username,
+		Password: config.AMQP.Password,
+		Host:     config.AMQP.Host,
+		VHost:    config.AMQP.VHost,
 	}
 
-	ch, err := conn.Channel()
+	client, err := messaging.NewClient(amqpConfig)
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("Failed to create AMQP client: %v", err))
+	}
+	defer client.Close()
+
+	// Declare queue
+	if err := client.DeclareStreamQueue(config.Queue.Name); err != nil {
+		panic(fmt.Sprintf("Failed to declare queue: %v", err))
 	}
 
-	// Start the queue
-	q, err := ch.QueueDeclare(config.Queue.Name, true, false, false, true, amqp.Table{
-		"x-queue-type":                    "stream",
-		"x-stream-max-segment-size-bytes": 30000,  // 0.03 MB
-		"x-max-length-bytes":              150000, // 0.15 MB
-		// If you want to use Timebased, set the x-max-age
-		// "x-max-age":                       "10s",
-	})
-	if err != nil {
-		panic(err)
-	}
-	// Publish 1000 Messages
-	ctx := context.Background()
+	// Create and encrypt event
 	event := Event{
 		Name: *eventName,
 		Msg:  *eventMsg,
@@ -124,19 +91,16 @@ func main() {
 		panic(err)
 	}
 
-	encryptedData, err := encrypt(data)
+	encryptedData, err := cryptor.Encrypt(data)
 	if err != nil {
 		panic(err)
 	}
 
-	err = ch.PublishWithContext(ctx, "", "events", false, false, amqp.Publishing{
-		CorrelationId: uuid.NewString(),
-		Body:          []byte(encryptedData),
-	})
-	if err != nil {
-		panic(err)
+	// Publish message
+	ctx := context.Background()
+	if err := client.PublishMessage(ctx, config.Queue.Name, uuid.NewString(), []byte(encryptedData)); err != nil {
+		panic(fmt.Sprintf("Failed to publish message: %v", err))
 	}
 
-	ch.Close()
-	fmt.Println(q.Name)
+	fmt.Printf("Successfully published message to queue: %s\n", config.Queue.Name)
 }

@@ -1,12 +1,15 @@
 package main
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+
+	"jarvis/pkg/crypto"
+	"jarvis/pkg/messaging"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"gopkg.in/yaml.v3"
@@ -15,6 +18,11 @@ import (
 // encryption key should be 32 bytes for AES-256
 var encryptionKey = []byte("12345678901234567890123456789012")
 
+type QueueDefinition struct {
+	Name     string `yaml:"name"`
+	Consumer string `yaml:"consumer"`
+}
+
 type Config struct {
 	AMQP struct {
 		Username string `yaml:"username"`
@@ -22,10 +30,13 @@ type Config struct {
 		Host     string `yaml:"host"`
 		VHost    string `yaml:"vhost"`
 	} `yaml:"amqp"`
-	Queue struct {
-		Name     string `yaml:"name"`
-		Consumer string `yaml:"consumer"`
-	} `yaml:"queue"`
+	Queues []QueueDefinition `yaml:"queues"`
+}
+
+// Event represents the structure of messages we receive
+type Event struct {
+	Name string `json:"name"`
+	Msg  string `json:"msg"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -42,85 +53,80 @@ func loadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-func decrypt(encryptedStr string) ([]byte, error) {
-	// Decode from base64
-	ciphertext, err := base64.StdEncoding.DecodeString(encryptedStr)
-	if err != nil {
-		return nil, err
-	}
+func handleMessage(cryptor *crypto.Cryptor) messaging.MessageHandler {
+	return func(delivery amqp.Delivery) {
+		fmt.Printf("Queue [%s] Event: %s\n", delivery.ConsumerTag, delivery.CorrelationId)
+		fmt.Printf("Headers: %v\n", delivery.Headers)
 
-	block, err := aes.NewCipher(encryptionKey)
-	if err != nil {
-		return nil, err
-	}
+		// Decrypt the received message
+		decryptedData, err := cryptor.Decrypt(string(delivery.Body))
+		if err != nil {
+			fmt.Printf("Failed to decrypt message: %v\n", err)
+			delivery.Ack(false)
+			return
+		}
 
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
+		// Try to parse the event
+		var event Event
+		if err := json.Unmarshal(decryptedData, &event); err != nil {
+			fmt.Printf("Failed to parse event: %v\n", err)
+			delivery.Ack(false)
+			return
+		}
 
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
+		fmt.Printf("Received event: Name=%s, Message=%s\n", event.Name, event.Msg)
+		delivery.Ack(true)
 	}
-
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return plaintext, nil
 }
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")
 	flag.Parse()
 
+	cryptor := crypto.NewCryptor(encryptionKey)
+
 	config, err := loadConfig(*configPath)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to load config: %v", err))
 	}
 
-	conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/%s",
-		config.AMQP.Username,
-		config.AMQP.Password,
-		config.AMQP.Host,
-		config.AMQP.VHost))
+	// Create AMQP client
+	amqpConfig := &messaging.AMQPConfig{
+		Username: config.AMQP.Username,
+		Password: config.AMQP.Password,
+		Host:     config.AMQP.Host,
+		VHost:    config.AMQP.VHost,
+	}
+
+	client, err := messaging.NewClient(amqpConfig)
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("Failed to create AMQP client: %v", err))
 	}
+	defer client.Close()
 
-	ch, err := conn.Channel()
-	if err != nil {
-		panic(err)
-	}
-
-	// Set prefetchCount to 50 to allow 50 messages before Acks are returned
-	if err := ch.Qos(50, 0, false); err != nil {
-		panic(err)
-	}
-
-	// Auto ACK has to be False, AutoAck = True will Crash dueue to it is no implemented in Streams
-	stream, err := ch.Consume(config.Queue.Name, config.Queue.Consumer, false, false, false, false, amqp.Table{})
-	if err != nil {
-		panic(err)
-	}
-	// Loop forever and read messages
-	fmt.Println("Starting to consume")
-	for event := range stream {
-		fmt.Printf("Event: %s \n", event.CorrelationId)
-		fmt.Printf("headers: %v \n", event.Headers)
-
-		// Decrypt the received message
-		decryptedData, err := decrypt(string(event.Body))
-		if err != nil {
-			fmt.Printf("Failed to decrypt message: %v\n", err)
-			continue
+	// Setup handler for each queue
+	messageHandler := handleMessage(cryptor)
+	for _, queueDef := range config.Queues {
+		consumerConfig := messaging.ConsumerConfig{
+			Queue: messaging.QueueConfig{
+				Name:     queueDef.Name,
+				Consumer: queueDef.Consumer,
+			},
+			PrefetchCount: 50,
+			Handler:       messageHandler,
 		}
 
-		fmt.Printf("Decrypted data: %s \n", string(decryptedData))
-		event.Ack(true)
+		if err := client.AddConsumer(consumerConfig); err != nil {
+			panic(fmt.Sprintf("Failed to setup consumer for queue %s: %v", queueDef.Name, err))
+		}
+		fmt.Printf("Started consuming from queue: %s\n", queueDef.Name)
 	}
-	ch.Close()
+
+	// Handle graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	fmt.Println("Agent is running. Press CTRL+C to exit.")
+	<-sigChan
+	fmt.Println("\nShutting down...")
 }
