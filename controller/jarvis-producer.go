@@ -1,19 +1,21 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"jarvis/pkg/crypto"
+	"jarvis/pkg/logging"
 	"jarvis/pkg/messaging"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
+// encryption key should be 32 bytes for AES-256
 var encryptionKey = []byte("12345678901234567890123456789012")
 
 type QueueDefinition struct {
@@ -28,13 +30,16 @@ type Config struct {
 		Host     string `yaml:"host"`
 		VHost    string `yaml:"vhost"`
 	} `yaml:"amqp"`
-	Queues []QueueDefinition `yaml:"queues"`
+	Queues  []QueueDefinition `yaml:"queues"`
+	Logging struct {
+		Producer logging.LogConfig `yaml:"producer"`
+	} `yaml:"logging"`
 }
 
 // Our struct that we will send
 type Event struct {
-	Name string
-	Msg  string
+	Name string `json:"name"`
+	Msg  string `json:"msg"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -53,16 +58,41 @@ func loadConfig(path string) (*Config, error) {
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")
-	eventName := flag.String("name", "Default Name", "Name of the event to send")
-	eventMsg := flag.String("msg", "Hello from default name", "Message to send")
+	eventName := flag.String("name", "", "Event name")
+	eventMsg := flag.String("msg", "", "Event message")
 	flag.Parse()
 
-	cryptor := crypto.NewCryptor(encryptionKey)
+	if *eventName == "" || *eventMsg == "" {
+		fmt.Println("Event name and message are required")
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	config, err := loadConfig(*configPath)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to load config: %v", err))
 	}
+
+	// Initialize logger with config
+	logger, err := logging.NewLoggerWithConfig(&config.Logging.Producer)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to initialize logger: %v", err))
+	}
+	defer logger.Close()
+
+	// Start log rotation checker in background
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			if err := logger.RotateLogFile(); err != nil {
+				logger.Error("Failed to rotate log file: %v", err)
+			}
+		}
+	}()
+
+	cryptor := crypto.NewCryptor(encryptionKey)
 
 	// Create AMQP client
 	amqpConfig := &messaging.AMQPConfig{
@@ -74,35 +104,45 @@ func main() {
 
 	client, err := messaging.NewClient(amqpConfig)
 	if err != nil {
-		panic(fmt.Sprintf("Failed to create AMQP client: %v", err))
+		logger.Error("Failed to create AMQP client: %v", err)
+		panic(err)
 	}
 	defer client.Close()
 
-	// Declare queue
-	if err := client.DeclareStreamQueue(config.Queues[0].Name); err != nil {
-		panic(fmt.Sprintf("Failed to declare queue: %v", err))
-	}
-
-	// Create and encrypt event
+	// Create event
 	event := Event{
 		Name: *eventName,
 		Msg:  *eventMsg,
 	}
-	data, err := json.Marshal(event)
+
+	// Marshal event to JSON
+	eventJSON, err := json.Marshal(event)
 	if err != nil {
+		logger.Error("Failed to marshal event: %v", err)
 		panic(err)
 	}
 
-	encryptedData, err := cryptor.Encrypt(data)
+	// Encrypt the event data
+	encryptedData, err := cryptor.Encrypt(eventJSON)
 	if err != nil {
+		logger.Error("Failed to encrypt event data: %v", err)
 		panic(err)
 	}
 
-	// Publish message
-	ctx := context.Background()
-	if err := client.PublishMessage(ctx, config.Queues[0].Name, uuid.NewString(), []byte(encryptedData)); err != nil {
-		panic(fmt.Sprintf("Failed to publish message: %v", err))
-	}
+	// Generate a unique message ID
+	messageID := uuid.New().String()
 
-	fmt.Printf("Successfully published message to queue: %s\n", config.Queues[0].Name)
+	// Publish to all configured queues
+	for _, queue := range config.Queues {
+		err = client.PublishMessage(messaging.PublishConfig{
+			Queue:         queue.Name,
+			CorrelationID: messageID,
+			Body:          []byte(encryptedData),
+		})
+		if err != nil {
+			logger.Error("Failed to publish message to queue %s: %v", queue.Name, err)
+			continue
+		}
+		logger.Info("Successfully published message (ID: %s) to queue: %s", messageID, queue.Name)
+	}
 }

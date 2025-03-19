@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -32,6 +33,20 @@ type ConsumerConfig struct {
 	Handler       MessageHandler
 }
 
+// PublishConfig holds the configuration for publishing a message
+type PublishConfig struct {
+	Queue         string
+	CorrelationID string
+	Body          []byte
+}
+
+// Default queue arguments
+var defaultQueueArgs = amqp.Table{
+	"x-queue-type":                    "stream",
+	"x-stream-max-segment-size-bytes": 30000,  // 0.03 MB
+	"x-max-length-bytes":              150000, // 0.15 MB
+}
+
 // Client represents an AMQP client
 type Client struct {
 	conn      *amqp.Connection
@@ -44,11 +59,13 @@ type Client struct {
 
 // NewClient creates a new AMQP client
 func NewClient(config *AMQPConfig) (*Client, error) {
-	conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/%s",
+	url := fmt.Sprintf("amqp://%s:%s@%s/%s",
 		config.Username,
 		config.Password,
 		config.Host,
-		config.VHost))
+		config.VHost)
+
+	conn, err := amqp.Dial(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to RabbitMQ: %v", err)
 	}
@@ -67,24 +84,20 @@ func NewClient(config *AMQPConfig) (*Client, error) {
 	}, nil
 }
 
-// DeclareStreamQueue declares a stream queue with the given configuration
-func (c *Client) DeclareStreamQueue(queueName string) error {
-	_, err := c.channel.QueueDeclare(
-		queueName,
+// declareQueue is an internal method to ensure consistent queue declaration
+func (c *Client) declareQueue(name string) (*amqp.Queue, error) {
+	queue, err := c.channel.QueueDeclare(
+		name,  // name
 		true,  // durable
 		false, // autoDelete
 		false, // exclusive
-		true,  // noWait
-		amqp.Table{
-			"x-queue-type":                    "stream",
-			"x-stream-max-segment-size-bytes": 30000,  // 0.03 MB
-			"x-max-length-bytes":              150000, // 0.15 MB
-		},
+		false, // noWait
+		defaultQueueArgs,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to declare queue: %v", err)
+		return nil, fmt.Errorf("failed to declare queue: %v", err)
 	}
-	return nil
+	return &queue, nil
 }
 
 // AddConsumer adds a new consumer with the given configuration
@@ -92,31 +105,43 @@ func (c *Client) AddConsumer(config ConsumerConfig) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if err := c.channel.Qos(config.PrefetchCount, 0, false); err != nil {
+	// Declare the queue with consistent arguments
+	queue, err := c.declareQueue(config.Queue.Name)
+	if err != nil {
+		return err
+	}
+
+	// Set QoS
+	if err := c.channel.Qos(
+		config.PrefetchCount, // prefetch count
+		0,                    // prefetch size
+		false,                // global
+	); err != nil {
 		return fmt.Errorf("failed to set QoS: %v", err)
 	}
 
-	stream, err := c.channel.Consume(
-		config.Queue.Name,
-		config.Queue.Consumer,
-		false, // autoAck
-		false, // exclusive
-		false, // noLocal
-		false, // noWait
-		amqp.Table{},
+	// Start consuming
+	msgs, err := c.channel.Consume(
+		queue.Name,            // queue
+		config.Queue.Consumer, // consumer
+		false,                 // auto-ack
+		false,                 // exclusive
+		false,                 // no-local
+		false,                 // no-wait
+		nil,                   // args
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create consumer: %v", err)
+		return fmt.Errorf("failed to register consumer: %v", err)
 	}
 
-	c.consumers[config.Queue.Name] = stream
+	c.consumers[config.Queue.Name] = msgs
 	c.wg.Add(1)
 
 	// Start consumer goroutine
 	go func() {
 		defer c.wg.Done()
-		for delivery := range stream {
-			config.Handler(delivery)
+		for msg := range msgs {
+			config.Handler(msg)
 		}
 	}()
 
@@ -129,22 +154,29 @@ func (c *Client) WaitForConsumers() {
 }
 
 // PublishMessage publishes a message to the specified queue
-func (c *Client) PublishMessage(ctx context.Context, queueName string, correlationID string, body []byte) error {
-	err := c.channel.PublishWithContext(
+func (c *Client) PublishMessage(config PublishConfig) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Declare the queue with consistent arguments
+	_, err := c.declareQueue(config.Queue)
+	if err != nil {
+		return err
+	}
+
+	return c.channel.PublishWithContext(
 		ctx,
-		"",        // exchange
-		queueName, // routing key
-		false,     // mandatory
-		false,     // immediate
+		"",           // exchange
+		config.Queue, // routing key
+		false,        // mandatory
+		false,        // immediate
 		amqp.Publishing{
-			CorrelationId: correlationID,
-			Body:          body,
+			ContentType:   "text/plain",
+			Body:          config.Body,
+			DeliveryMode:  amqp.Persistent,
+			CorrelationId: config.CorrelationID,
 		},
 	)
-	if err != nil {
-		return fmt.Errorf("failed to publish message: %v", err)
-	}
-	return nil
 }
 
 // Close closes the AMQP connection and channel

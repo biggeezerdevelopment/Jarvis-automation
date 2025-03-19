@@ -1,0 +1,20 @@
+2025/03/19 09:30:00.851896 [INFO] Started consuming from queue: events
+2025/03/19 09:30:00.852416 [INFO] Agent is running. Press CTRL+C to exit.
+2025/03/19 09:30:05.886322 [INFO] Queue [events_consumer] Event: d63ccfac-aefb-48f0-9a97-570f3981f948
+2025/03/19 09:30:05.886829 [INFO] Headers: map[x-stream-offset:7047]
+2025/03/19 09:30:05.886829 [INFO] Received event: Name=reboot_server, Message=this is a message
+2025/03/19 09:30:21.604614 [INFO] Shutting down...
+2025/03/19 09:31:19.790297 [INFO] Started consuming from queue: events
+2025/03/19 09:31:19.790297 [INFO] Agent is running. Press CTRL+C to exit.
+2025/03/19 09:31:23.044097 [INFO] Queue [events_consumer] Event: f1d47e6c-f89a-46b3-8a96-6c57be8cd281
+2025/03/19 09:31:23.044097 [INFO] Headers: map[x-stream-offset:7048]
+2025/03/19 09:31:23.044097 [INFO] Rebooting the system: this is a message
+2025/03/19 09:31:23.044610 [INFO] Received event: Name=reboot_server, Message=this is a message
+2025/03/19 09:32:09.806064 [INFO] Shutting down...
+2025/03/19 09:32:56.209751 [INFO] Started consuming from queue: events
+2025/03/19 09:32:56.210272 [INFO] Agent is running. Press CTRL+C to exit.
+2025/03/19 09:33:11.259802 [INFO] Queue [events_consumer] Event: 045acc4d-af27-4c2e-8908-dd73cd07eff0
+2025/03/19 09:33:11.260323 [INFO] Headers: map[x-stream-offset:7049]
+2025/03/19 09:33:11.260323 [INFO] Rebooting the system: this is a message
+2025/03/19 09:33:11.260323 [INFO] Received event: Name=reboot_server, Message=this is a message
+2025/03/19 10:24:00.277835 [INFO] Shutting down...

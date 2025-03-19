@@ -1,7 +1,7 @@
 package main
 
 import (
-	"encoding/json"
+	//ncoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -12,7 +12,6 @@ import (
 	"jarvis/pkg/crypto"
 	"jarvis/pkg/logging"
 	"jarvis/pkg/messaging"
-	"jarvis/pkg/monitoring"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"gopkg.in/yaml.v3"
@@ -64,9 +63,6 @@ func loadConfig(path string) (*Config, error) {
 }
 
 // Test function to process a message
-func handleRebootRequest(data string, logger *logging.Logger) {
-	logger.Info("Rebooting the system: %s", data)
-}
 
 func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) messaging.MessageHandler {
 	return func(delivery amqp.Delivery) {
@@ -84,83 +80,19 @@ func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Conf
 		logger.Info("Decrypted data: %s", decryptedData)
 
 		// Try to parse the event
-		var event Event
-		if err := json.Unmarshal(decryptedData, &event); err != nil {
-			logger.Error("Failed to parse event: %v", err)
-			delivery.Ack(false)
-			return
-		}
+		/*
+			if err := json.Unmarshal(decryptedData, &event); err != nil {
+				logger.Error("Failed to parse event: %v", err)
+				delivery.Ack(false)
+				return
+			}
+		*/
 
-		// Handle monitoring request
-		if event.Name == "get_metrics" {
-			handleMonitoringRequest(event.Msg, delivery.CorrelationId, cryptor, logger, config)
-			delivery.Ack(true)
-			return
-		}
-
-		// Handle other events
-		if event.Name == "reboot_server" {
-			handleRebootRequest(event.Msg, logger)
-		}
-		logger.Info("Received event: Name=%s, Message=%s", event.Name, event.Msg)
 		delivery.Ack(true)
 	}
 }
 
 // handleMonitoringRequest processes a monitoring request and sends the response
-func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) {
-	// Create monitor with 1-second interval for measurements
-	monitor := monitoring.NewMonitor(1 * time.Second)
-
-	// Get system metrics
-	metrics, err := monitor.GetMetrics()
-	if err != nil {
-		logger.Error("Failed to get system metrics: %v", err)
-		return
-	}
-
-	// Convert metrics to JSON
-	metricsJSON, err := metrics.ToJSON()
-	if err != nil {
-		logger.Error("Failed to convert metrics to JSON: %v", err)
-		return
-	}
-
-	// Encrypt the metrics
-	encryptedData, err := cryptor.Encrypt(metricsJSON)
-	if err != nil {
-		logger.Error("Failed to encrypt metrics: %v", err)
-		return
-	}
-
-	// Create AMQP client for response
-	amqpConfig := &messaging.AMQPConfig{
-		Username: config.AMQP.Username,
-		Password: config.AMQP.Password,
-		Host:     config.AMQP.Host,
-		VHost:    config.AMQP.VHost,
-	}
-
-	client, err := messaging.NewClient(amqpConfig)
-	if err != nil {
-		logger.Error("Failed to create AMQP client for response: %v", err)
-		return
-	}
-	defer client.Close()
-
-	// Publish the response
-	err = client.PublishMessage(messaging.PublishConfig{
-		Queue:         responseQueue,
-		CorrelationID: correlationID,
-		Body:          []byte(encryptedData),
-	})
-	if err != nil {
-		logger.Error("Failed to publish metrics response: %v", err)
-		return
-	}
-
-	logger.Info("Successfully sent metrics response to queue: %s", responseQueue)
-}
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to config file")

@@ -1,0 +1,5 @@
+2025/03/19 11:07:05.332229 [INFO] Started consuming from queue: Tester
+2025/03/19 11:07:05.332777 [INFO] Agent is running. Press CTRL+C to exit.
+2025/03/19 11:07:12.426869 [INFO] Queue [events_consumer] Event: 481715b2-0796-463e-a71a-e9cd58282751
+2025/03/19 11:07:12.426869 [INFO] Headers: map[x-stream-offset:7]
+2025/03/19 11:07:12.426869 [INFO] Decrypted data: {"timestamp":"2025-03-19T11:07:11.4107606-05:00","cpu_usage":[3.125,3.125,14.0625,15.625,6.25,12.5,10.9375,15.625],"load_avg_1":10.15625,"load_avg_5":10.15625,"load_avg_15":10.15625,"num_cpu":8,"system_type":"windows"}
