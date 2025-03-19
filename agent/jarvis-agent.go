@@ -196,7 +196,7 @@ func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Conf
 			return
 		}
 
-		logger.Info("Decrypted data: %s", decryptedData)
+		//logger.Info("Decrypted data: %s", decryptedData)
 
 		// Parse the event
 		var event Event

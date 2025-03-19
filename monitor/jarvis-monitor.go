@@ -46,7 +46,7 @@ type Config struct {
 		Interval time.Duration `yaml:"interval"` // Interval between monitoring checks
 	} `yaml:"monitoring"`
 	Logging struct {
-		Agent logging.LogConfig `yaml:"agent"` // Logging configuration for the monitor
+		Agent logging.LogConfig `yaml:"monitor"` // Logging configuration for the monitor
 	} `yaml:"logging"`
 }
 
