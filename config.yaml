@@ -1,0 +1,8 @@
+amqp:
+  username: "guest"
+  password: "guest"
+  host: "localhost:5672"
+  vhost: ""
+queue:
+  name: "events"
+  consumer: "events_consumer" 
