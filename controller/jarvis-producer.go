@@ -16,6 +16,11 @@ import (
 
 var encryptionKey = []byte("12345678901234567890123456789012")
 
+type QueueDefinition struct {
+	Name     string `yaml:"name"`
+	Consumer string `yaml:"consumer"`
+}
+
 type Config struct {
 	AMQP struct {
 		Username string `yaml:"username"`
@@ -23,10 +28,7 @@ type Config struct {
 		Host     string `yaml:"host"`
 		VHost    string `yaml:"vhost"`
 	} `yaml:"amqp"`
-	Queue struct {
-		Name     string `yaml:"name"`
-		Consumer string `yaml:"consumer"`
-	} `yaml:"queue"`
+	Queues []QueueDefinition `yaml:"queues"`
 }
 
 // Our struct that we will send
@@ -77,7 +79,7 @@ func main() {
 	defer client.Close()
 
 	// Declare queue
-	if err := client.DeclareStreamQueue(config.Queue.Name); err != nil {
+	if err := client.DeclareStreamQueue(config.Queues[0].Name); err != nil {
 		panic(fmt.Sprintf("Failed to declare queue: %v", err))
 	}
 
@@ -98,9 +100,9 @@ func main() {
 
 	// Publish message
 	ctx := context.Background()
-	if err := client.PublishMessage(ctx, config.Queue.Name, uuid.NewString(), []byte(encryptedData)); err != nil {
+	if err := client.PublishMessage(ctx, config.Queues[0].Name, uuid.NewString(), []byte(encryptedData)); err != nil {
 		panic(fmt.Sprintf("Failed to publish message: %v", err))
 	}
 
-	fmt.Printf("Successfully published message to queue: %s\n", config.Queue.Name)
+	fmt.Printf("Successfully published message to queue: %s\n", config.Queues[0].Name)
 }
