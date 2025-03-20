@@ -125,13 +125,13 @@ func sendToRemoteQueue(queueName, correlationID string, data interface{}, crypto
 		}
 		jsonData = string(dataBytes)
 	}
-	fmt.Printf("Data: %s\n", jsonData)
+	//fmt.Printf("Data: %s\n", jsonData)
 	// Encrypt the data
 	encryptedData, err := cryptor.Encrypt([]byte(jsonData))
 	if err != nil {
 		return fmt.Errorf("failed to encrypt data: %v", err)
 	}
-	fmt.Printf("Queue Name: %s\n", queueName)
+	//fmt.Printf("Queue Name: %s\n", queueName)
 	// Send the message
 	err = client.PublishMessage(messaging.PublishConfig{
 		Queue:         queueName,
