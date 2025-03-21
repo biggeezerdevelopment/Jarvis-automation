@@ -87,13 +87,51 @@ type OsMetric struct {
 // Monitor handles system monitoring operations
 type Monitor struct {
 	interval time.Duration
+	config   *Config
+}
+
+// Config represents the system configuration
+type Config struct {
+	Interval time.Duration `yaml:"interval"`
+	Logging  struct {
+		Enabled bool   `yaml:"enabled"`
+		Path    string `yaml:"path"`
+	} `yaml:"logging"`
+	Monitoring struct {
+		Enabled  bool          `yaml:"enabled"`
+		Interval time.Duration `yaml:"interval"`
+	} `yaml:"monitoring"`
 }
 
 // NewMonitor creates a new system monitor
-func NewMonitor(interval time.Duration) *Monitor {
+func NewMonitor(interval time.Duration, config *Config) *Monitor {
 	return &Monitor{
 		interval: interval,
+		config:   config,
 	}
+}
+
+// UpdateConfig updates the system configuration
+func (m *Monitor) UpdateConfig(newConfig *Config) error {
+	if newConfig == nil {
+		return fmt.Errorf("invalid configuration: config is nil")
+	}
+
+	// Validate the new configuration
+	if newConfig.Interval <= 0 {
+		return fmt.Errorf("invalid configuration: interval must be positive")
+	}
+
+	// Update the configuration
+	m.config = newConfig
+	m.interval = newConfig.Interval
+
+	return nil
+}
+
+// GetConfig returns the current configuration
+func (m *Monitor) GetConfig() *Config {
+	return m.config
 }
 
 func getOSVersion() (string, error) {

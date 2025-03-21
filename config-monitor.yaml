@@ -15,22 +15,6 @@ monitoring:
   interval: "1s"
 
 logging:
-  agent:
-    directory: "logs/agent"
-    prefix: "agent"
-    console: true
-    file: true
-    max_size: 100
-    max_age: 7
-    compress: true
-  producer:
-    directory: "logs/producer"
-    prefix: "producer"
-    console: true
-    file: true
-    max_size: 50
-    max_age: 3
-    compress: true
   monitor:
     directory: "logs/monitor"
     prefix: "monitor"

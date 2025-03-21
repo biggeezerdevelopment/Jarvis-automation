@@ -9,8 +9,6 @@ queues:
   - name: "events"
     consumer: "events_consumer"
     remote: false
-  
-  
 
 monitoring:
   enabled: true
@@ -25,20 +23,3 @@ logging:
     max_size: 100
     max_age: 7
     compress: true
-  producer:
-    directory: "logs/producer"
-    prefix: "producer"
-    console: true
-    file: true
-    max_size: 50
-    max_age: 3
-    compress: true
-  monitor:
-    directory: "logs/monitor"
-    prefix: "monitor"
-    console: true
-    file: true
-    max_size: 50
-    max_age: 3
-    compress: true
-  

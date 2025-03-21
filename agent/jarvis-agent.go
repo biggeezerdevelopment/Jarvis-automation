@@ -54,9 +54,10 @@ type Config struct {
 // Event represents the structure of messages received by the agent.
 // Each event has a name that determines its type and a message payload.
 type Event struct {
-	Name   string `json:"name"`   // Type of event (e.g., "get_metrics", "reboot_server")
-	Msg    string `json:"msg"`    // Event payload or parameters
-	Remote string `json:"remote"` // Whether the event is remote
+	Name   string  `json:"name"`   // Type of event (e.g., "get_metrics", "reboot_server", "update_config")
+	Msg    string  `json:"msg"`    // Event payload or parameters
+	Remote string  `json:"remote"` // Whether the event is remote
+	Config *Config `json:"config"` // Configuration data for update_config events
 }
 
 // loadConfig reads and parses the configuration file from the specified path.
@@ -155,7 +156,24 @@ func sendToRemoteQueue(queueName, correlationID string, data interface{}, crypto
 //   - config: System configuration
 func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) {
 	// Create monitor with 1-second interval for measurements
-	monitor := monitoring.NewMonitor(1 * time.Second)
+	monitorConfig := &monitoring.Config{
+		Interval: 1 * time.Second,
+		Logging: struct {
+			Enabled bool   `yaml:"enabled"`
+			Path    string `yaml:"path"`
+		}{
+			Enabled: true,
+			Path:    config.Logging.Agent.Directory,
+		},
+		Monitoring: struct {
+			Enabled  bool          `yaml:"enabled"`
+			Interval time.Duration `yaml:"interval"`
+		}{
+			Enabled:  config.Monitoring.Enabled,
+			Interval: config.Monitoring.Interval,
+		},
+	}
+	monitor := monitoring.NewMonitor(1*time.Second, monitorConfig)
 
 	// Collect system metrics
 	metrics, err := monitor.GetMetrics()
@@ -170,13 +188,54 @@ func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypt
 		logger.Error("Failed to convert metrics to JSON: %v", err)
 		return
 	}
-	//fmt.Printf("Metrics: %s\n", metrics.String())
+
 	// Send metrics to remote queue
 	err = sendToRemoteQueue(responseQueue, correlationID, metricsJSON, cryptor, logger, config)
 	if err != nil {
 		logger.Error("Failed to send metrics to remote queue: %v", err)
 		return
 	}
+}
+
+// handleConfigUpdate processes a configuration update request.
+// Parameters:
+//   - newConfig: The new configuration to apply
+//   - responseQueue: Queue to send the response to
+//   - correlationID: ID to correlate the response with the request
+//   - cryptor: For encrypting the response
+//   - logger: For logging operations
+//   - config: Current system configuration
+func handleConfigUpdate(newConfig *Config, responseQueue, correlationID string, cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) {
+	// Validate the new configuration
+	if newConfig == nil {
+		logger.Error("Invalid configuration: config is nil")
+		return
+	}
+
+	// Update the configuration
+	*config = *newConfig
+
+	// Prepare response
+	response := map[string]string{
+		"status": "success",
+		"msg":    "Configuration updated successfully",
+	}
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		logger.Error("Failed to marshal response: %v", err)
+		return
+	}
+
+	// Send response if queue is specified
+	if responseQueue != "" {
+		err = sendToRemoteQueue(responseQueue, correlationID, responseJSON, cryptor, logger, config)
+		if err != nil {
+			logger.Error("Failed to send config update response: %v", err)
+			return
+		}
+	}
+
+	logger.Info("Configuration updated successfully")
 }
 
 // handleMessage creates a message handler function that processes incoming AMQP messages.
@@ -214,7 +273,6 @@ func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Conf
 		switch event.Name {
 		case "get_metrics":
 			// Use response queue from headers or event message
-
 			if responseQueue != "" {
 				handleMonitoringRequest(responseQueue, delivery.CorrelationId, cryptor, logger, config)
 			} else {
@@ -231,6 +289,13 @@ func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Conf
 				if err != nil {
 					logger.Error("Failed to send reboot response: %v", err)
 				}
+			}
+			delivery.Ack(true)
+		case "update_config":
+			if event.Config != nil {
+				handleConfigUpdate(event.Config, responseQueue, delivery.CorrelationId, cryptor, logger, config)
+			} else {
+				logger.Error("Invalid configuration update: config is nil")
 			}
 			delivery.Ack(true)
 		default:
