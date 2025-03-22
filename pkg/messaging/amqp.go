@@ -84,8 +84,8 @@ func NewClient(config *AMQPConfig) (*Client, error) {
 	}, nil
 }
 
-// declareQueue is an internal method to ensure consistent queue declaration
-func (c *Client) declareQueue(name string) (*amqp.Queue, error) {
+// DeclareQueue is a method to ensure consistent queue declaration
+func (c *Client) DeclareQueue(name string) (*amqp.Queue, error) {
 	queue, err := c.channel.QueueDeclare(
 		name,  // name
 		true,  // durable
@@ -106,7 +106,7 @@ func (c *Client) AddConsumer(config ConsumerConfig) error {
 	defer c.mu.Unlock()
 
 	// Declare the queue with consistent arguments
-	queue, err := c.declareQueue(config.Queue.Name)
+	queue, err := c.DeclareQueue(config.Queue.Name)
 	if err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func (c *Client) PublishMessage(config PublishConfig) error {
 	defer cancel()
 
 	// Declare the queue with consistent arguments
-	_, err := c.declareQueue(config.Queue)
+	_, err := c.DeclareQueue(config.Queue)
 	if err != nil {
 		return err
 	}
@@ -190,4 +190,40 @@ func (c *Client) Close() {
 	if c.conn != nil {
 		c.conn.Close()
 	}
+}
+
+// ListQueues retrieves information about all queues from RabbitMQ
+func (c *Client) ListQueues() ([]QueueInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Create management config
+	mgmtConfig := NewManagementConfig(
+		c.config.Username,
+		c.config.Password,
+		c.config.Host,
+		15672, // Default RabbitMQ management port
+	)
+
+	// Get queues using management API
+	return mgmtConfig.ListQueues()
+}
+
+// DeleteQueue deletes a queue from RabbitMQ
+func (c *Client) DeleteQueue(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Delete the queue
+	_, err := c.channel.QueueDelete(
+		name,  // name
+		false, // if unused
+		false, // if empty
+		false, // no wait
+	)
+	if err != nil {
+		return fmt.Errorf("failed to delete queue: %v", err)
+	}
+
+	return nil
 }

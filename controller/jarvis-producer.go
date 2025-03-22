@@ -67,6 +67,94 @@ func loadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
+// listQueues connects to RabbitMQ and retrieves a list of all queues.
+// Parameters:
+//   - config: AMQP configuration
+//   - logger: For logging operations
+func listQueues(config *Config, logger *logging.Logger) error {
+	// Create management API client
+	mgmtConfig := messaging.NewManagementConfig(
+		config.AMQP.Username,
+		config.AMQP.Password,
+		config.AMQP.Host,
+		15672, // Default RabbitMQ management port
+	)
+
+	// Get all queues
+	queues, err := mgmtConfig.ListQueues()
+	if err != nil {
+		return fmt.Errorf("failed to list queues: %v", err)
+	}
+
+	// Print queue information
+	fmt.Println("\nRabbitMQ Queues:")
+	fmt.Println("----------------")
+	for _, queue := range queues {
+		fmt.Printf("Name: %s\n", queue.Name)
+		fmt.Printf("  Messages: %d\n", queue.Messages)
+		fmt.Printf("  Consumers: %d\n", queue.Consumers)
+		fmt.Printf("  State: %s\n", queue.State)
+		if queue.Node != "" {
+			fmt.Printf("  Node: %s\n", queue.Node)
+		}
+		fmt.Println("----------------")
+	}
+
+	return nil
+}
+
+// createQueue creates a new queue in RabbitMQ
+func createQueue(config *Config, logger *logging.Logger, queueName string) error {
+	// Setup AMQP client
+	amqpConfig := &messaging.AMQPConfig{
+		Username: config.AMQP.Username,
+		Password: config.AMQP.Password,
+		Host:     config.AMQP.Host,
+		VHost:    config.AMQP.VHost,
+	}
+
+	client, err := messaging.NewClient(amqpConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create AMQP client: %v", err)
+	}
+	defer client.Close()
+
+	// Declare the queue
+	_, err = client.DeclareQueue(queueName)
+	if err != nil {
+		return fmt.Errorf("failed to create queue: %v", err)
+	}
+
+	logger.Info("Successfully created queue: %s", queueName)
+	return nil
+}
+
+// deleteQueue deletes a queue from RabbitMQ
+func deleteQueue(config *Config, logger *logging.Logger, queueName string) error {
+	// Setup AMQP client
+	amqpConfig := &messaging.AMQPConfig{
+		Username: config.AMQP.Username,
+		Password: config.AMQP.Password,
+		Host:     config.AMQP.Host,
+		VHost:    config.AMQP.VHost,
+	}
+
+	client, err := messaging.NewClient(amqpConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create AMQP client: %v", err)
+	}
+	defer client.Close()
+
+	// Delete the queue
+	err = client.DeleteQueue(queueName)
+	if err != nil {
+		return fmt.Errorf("failed to delete queue: %v", err)
+	}
+
+	logger.Info("Successfully deleted queue: %s", queueName)
+	return nil
+}
+
 // main is the entry point of the Jarvis producer.
 // It processes command-line arguments, initializes components, and publishes
 // the specified event to all configured queues with encryption.
@@ -76,14 +164,10 @@ func main() {
 	eventName := flag.String("name", "", "Event name")
 	eventMsg := flag.String("msg", "", "Event message")
 	eventRemote := flag.String("remote", "Tester", "Event remote")
+	listQueuesFlag := flag.Bool("list-queues", false, "List all queues from RabbitMQ")
+	createQueueFlag := flag.String("create-queue", "", "Create a new queue with the specified name")
+	deleteQueueFlag := flag.String("delete-queue", "", "Delete a queue with the specified name")
 	flag.Parse()
-
-	// Validate required arguments
-	if *eventName == "" {
-		fmt.Println("Event name is required")
-		flag.Usage()
-		os.Exit(1)
-	}
 
 	// Load configuration
 	config, err := loadConfig(*configPath)
@@ -109,6 +193,40 @@ func main() {
 			}
 		}
 	}()
+
+	// Handle delete queue command
+	if *deleteQueueFlag != "" {
+		if err := deleteQueue(config, logger, *deleteQueueFlag); err != nil {
+			logger.Error("Failed to delete queue: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Handle create queue command
+	if *createQueueFlag != "" {
+		if err := createQueue(config, logger, *createQueueFlag); err != nil {
+			logger.Error("Failed to create queue: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Handle list queues command
+	if *listQueuesFlag {
+		if err := listQueues(config, logger); err != nil {
+			logger.Error("Failed to list queues: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Validate required arguments for event publishing
+	if *eventName == "" {
+		fmt.Println("Event name is required")
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	// Initialize components
 	cryptor := crypto.NewCryptor(encryptionKey)

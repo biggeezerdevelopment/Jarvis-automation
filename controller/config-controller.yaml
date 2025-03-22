@@ -1,7 +1,8 @@
 amqp:
   username: "guest"
   password: "guest"
-  host: "localhost:5672"
+  # host: "localhost:5672"
+  host: "localhost"
   vhost: ""
 
 queues:
