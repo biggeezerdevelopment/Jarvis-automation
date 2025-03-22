@@ -54,10 +54,9 @@ type Config struct {
 // Event represents the structure of messages received by the agent.
 // Each event has a name that determines its type and a message payload.
 type Event struct {
-	Name   string  `json:"name"`   // Type of event (e.g., "get_metrics", "reboot_server", "update_config")
-	Msg    string  `json:"msg"`    // Event payload or parameters
-	Remote string  `json:"remote"` // Whether the event is remote
-	Config *Config `json:"config"` // Configuration data for update_config events
+	Name   string `json:"name"`   // Type of event (e.g., "get_metrics", "reboot_server", "update_config")
+	Msg    string `json:"msg"`    // Event payload or parameters (JSON string for config updates)
+	Remote string `json:"remote"` // Whether the event is remote
 }
 
 // loadConfig reads and parses the configuration file from the specified path.
@@ -199,21 +198,28 @@ func handleMonitoringRequest(responseQueue, correlationID string, cryptor *crypt
 
 // handleConfigUpdate processes a configuration update request.
 // Parameters:
-//   - newConfig: The new configuration to apply
+//   - configJSON: JSON string containing the new configuration
 //   - responseQueue: Queue to send the response to
 //   - correlationID: ID to correlate the response with the request
 //   - cryptor: For encrypting the response
 //   - logger: For logging operations
 //   - config: Current system configuration
-func handleConfigUpdate(newConfig *Config, responseQueue, correlationID string, cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) {
+func handleConfigUpdate(configJSON, responseQueue, correlationID string, cryptor *crypto.Cryptor, logger *logging.Logger, config *Config) {
+	// Parse the configuration JSON
+	var newConfig Config
+	if err := json.Unmarshal([]byte(configJSON), &newConfig); err != nil {
+		logger.Error("Failed to parse configuration JSON: %v", err)
+		return
+	}
+
 	// Validate the new configuration
-	if newConfig == nil {
-		logger.Error("Invalid configuration: config is nil")
+	if newConfig.AMQP.Username == "" || newConfig.AMQP.Password == "" || newConfig.AMQP.Host == "" {
+		logger.Error("Invalid configuration: required AMQP fields are missing")
 		return
 	}
 
 	// Update the configuration
-	*config = *newConfig
+	*config = newConfig
 
 	// Prepare response
 	response := map[string]string{
@@ -292,10 +298,10 @@ func handleMessage(cryptor *crypto.Cryptor, logger *logging.Logger, config *Conf
 			}
 			delivery.Ack(true)
 		case "update_config":
-			if event.Config != nil {
-				handleConfigUpdate(event.Config, responseQueue, delivery.CorrelationId, cryptor, logger, config)
+			if event.Msg != "" {
+				handleConfigUpdate(event.Msg, responseQueue, delivery.CorrelationId, cryptor, logger, config)
 			} else {
-				logger.Error("Invalid configuration update: config is nil")
+				logger.Error("Invalid configuration update: message is empty")
 			}
 			delivery.Ack(true)
 		default:
